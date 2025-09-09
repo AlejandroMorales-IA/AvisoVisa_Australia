@@ -1,0 +1,65 @@
+name: WHM Visa Check (Spain → Australia)
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # cada 5 minutos (UTC)
+  workflow_dispatch:        # permite lanzarlo manualmente desde "Actions"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install requests beautifulsoup4
+
+      - name: Comprobar estado WHM (España)
+        id: check
+        env:
+          URL: "https://immi.homeaffairs.gov.au/what-we-do/whm-program/status-of-country-caps"
+          COUNTRY: "Spain"
+        run: |
+          python - <<'PY'
+          import os, sys, requests
+          from bs4 import BeautifulSoup
+
+          URL = os.getenv("URL")
+          COUNTRY = os.getenv("COUNTRY","Spain").lower()
+
+          r = requests.get(URL, timeout=20, headers={"User-Agent":"WHM-check/1.0"})
+          r.raise_for_status()
+          s = BeautifulSoup(r.text, "html.parser")
+          cell = s.find(["td","th"], string=lambda t: t and COUNTRY in t.lower())
+          if not cell:
+              print("::error::No se encontró el país en la tabla"); sys.exit(1)
+          status = cell.find_next("td").get_text(strip=True).lower().replace("*","")
+          print(f"Estado detectado: {status}")
+          # Exportar a outputs del job
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"status={status}\n")
+          PY
+
+      - name: Enviar alerta por Telegram (si está OPEN → spamea cada 5 min)
+        if: steps.check.outputs.status == 'open'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          URL: "https://immi.homeaffairs.gov.au/what-we-do/whm-program/status-of-country-caps"
+          COUNTRY_TITLE: "Spain"
+        run: |
+          python - <<'PY'
+          import os, requests
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          chat_id = os.environ["TELEGRAM_CHAT_ID"]
+          url = f"https://api.telegram.org/bot{token}/sendMessage"
+          msg = f"🚨 ¡{os.environ['COUNTRY_TITLE']} está OPEN! Revisa y aplica: {os.environ['URL']}"
+          r = requests.post(url, data={"chat_id": chat_id, "text": msg}, timeout=20)
+          print("Telegram status:", r.status_code, r.text[:200])
+          PY
