@@ -27,20 +27,47 @@ jobs:
           COUNTRY: "Spain"
         run: |
           python - <<'PY'
-          import os, sys, requests
+          import os, sys, re, unicodedata, requests
           from bs4 import BeautifulSoup
 
           URL = os.getenv("URL")
-          COUNTRY = os.getenv("COUNTRY","Spain").lower()
+          COUNTRY = os.getenv("COUNTRY", "Spain").lower()
 
-          r = requests.get(URL, timeout=20, headers={"User-Agent":"WHM-check/1.0"})
+          # Descarga
+          r = requests.get(URL, timeout=20, headers={"User-Agent": "WHM-check/1.0"})
           r.raise_for_status()
+
+          # Parse
           s = BeautifulSoup(r.text, "html.parser")
           cell = s.find(["td","th"], string=lambda t: t and COUNTRY in t.lower())
           if not cell:
               print("::error::No se encontró el país en la tabla"); sys.exit(1)
-          status = cell.find_next("td").get_text(strip=True).lower().replace("*","")
-          print(f"Estado detectado: {status}")
+
+          # La celda de estado es la siguiente <td> en la fila
+          state_cell = cell.find_next("td")
+          if not state_cell:
+              print("::error::No se encontró la celda de estado"); sys.exit(1)
+
+          raw = state_cell.get_text(separator=" ", strip=True)
+
+          # Normalización robusta
+          norm = unicodedata.normalize("NFKC", raw).lower().replace("\xa0", " ")
+          norm = norm.replace("*", " ")      # quita asteriscos
+          norm = re.sub(r"[–—\-·•:;()\[\]]", " ", norm)  # quita puntuación común
+          norm = re.sub(r"\s+", " ", norm).strip()       # colapsa espacios
+
+          # Clasificación por palabras clave (tolerante)
+          if "open" in norm:
+              status = "open"
+          elif "closed" in norm:
+              status = "closed"
+          elif "pause" in norm:  # cubre paused/pause
+              status = "paused"
+          else:
+              status = norm  # deja rastro si aparece algo nuevo
+
+          print(f"Estado detectado: {status} (raw='{raw}')")
+
           # Exportar a outputs del job
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"status={status}\n")
